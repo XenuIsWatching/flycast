@@ -219,6 +219,17 @@ elseif(LIBRETRO)
 	endif()
 	if(ANDROID OR USE_GLES)
 		target_compile_definitions(${PROJECT_NAME} PRIVATE GLES GLES3 HAVE_OPENGLES HAVE_OPENGLES3 HAVE_OIT)
+		if(ANDROID)
+			# libandroid, for ASharedMemory_create. posix_vmem.cpp declares it
+			# weak and falls back to opening /dev/ashmem when it is null -- and
+			# Android 11 and later deny an app that device, so the fallback
+			# returns EACCES, nvmem is disabled, and the first guest memory
+			# access the dynarec emits faults with nothing to rewrite. Without
+			# this line the symbol is never resolved and the good path is dead
+			# code: the app build links it (see the ANDROID block further down),
+			# the libretro build did not.
+			target_link_libraries(${PROJECT_NAME} PRIVATE android)
+		endif()
     elseif(IOS)
 		target_compile_definitions(${PROJECT_NAME} PRIVATE GLES GLES3 HAVE_OPENGLES HAVE_OPENGLES3)
 		find_library(OPENGLES OpenGLES)
