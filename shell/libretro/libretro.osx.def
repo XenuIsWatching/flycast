@@ -25,3 +25,4 @@ _retro_unload_game
 _retro_get_region
 _retro_get_memory_data
 _retro_get_memory_size
+_flycast_get_vmu_screen
