@@ -63,6 +63,8 @@
 #include "LogManager.h"
 #include "cheats.h"
 #include "rend/osd.h"
+#include "ControllerAudioInterface.h"
+#include "ControllerDisplayInterface.h"
 #include "cfg/option.h"
 #include "version.h"
 #include "oslib/oslib.h"
@@ -359,6 +361,55 @@ void retro_set_environment(retro_environment_t cb)
 			led_state_cb = led_interface.set_led_state;
 }
 
+// VMU screens and beeps, handed to a frontend that answers these private
+// environment calls instead of being drawn over the game and mixed into it.
+static retro_controller_display_interface controller_display;
+static bool controller_display_ok;
+static retro_controller_audio_interface controller_audio;
+static bool controller_audio_ok;
+
+static void probe_controller_interfaces()
+{
+	controller_display = {};
+	controller_display_ok = environ_cb(RETRO_ENVIRONMENT_GET_CONTROLLER_DISPLAY_INTERFACE, &controller_display)
+		&& controller_display.interface_version >= 1 && controller_display.refresh != nullptr;
+	controller_audio = {};
+	controller_audio_ok = (environ_cb(RETRO_ENVIRONMENT_GET_CONTROLLER_AUDIO_INTERFACE, &controller_audio)
+			|| environ_cb(RETRO_ENVIRONMENT_GET_CONTROLLER_AUDIO_INTERFACE_FINAL, &controller_audio))
+		&& controller_audio.interface_version >= 1 && controller_audio.push != nullptr;
+	INFO_LOG(COMMON, "controller screens: %s, VMU beeps: %s",
+		controller_display_ok ? "handed over" : "not offered",
+		controller_audio_ok ? "handed over" : "mixed into the main stream");
+}
+
+void libretro_vmu_screen_changed(int bus_id, int bus_port)
+{
+	if (!controller_display_ok)
+		return;
+	const u32 *src = vmu_lcd_data[bus_id * 2 + bus_port];
+	u32 pixels[VMU_SCREEN_WIDTH * VMU_SCREEN_HEIGHT];
+	// vmu_lcd_data runs right to left against the LCD's own addressing.
+	for (int y = 0; y < VMU_SCREEN_HEIGHT; y++)
+		for (int x = 0; x < VMU_SCREEN_WIDTH; x++)
+		{
+			u32 c = src[y * VMU_SCREEN_WIDTH + (VMU_SCREEN_WIDTH - 1 - x)];
+			pixels[y * VMU_SCREEN_WIDTH + x] = ((c & 0xFF) << 16) | ((c >> 8) & 0xFF) << 8 | ((c >> 16) & 0xFF);
+		}
+	controller_display.refresh(controller_display.frontend_data, bus_id, bus_port,
+		pixels, VMU_SCREEN_WIDTH, VMU_SCREEN_HEIGHT);
+}
+
+bool libretro_vmu_beeps_routed()
+{
+	return controller_audio_ok;
+}
+
+bool libretro_push_vmu_beep(int vmu, const int16_t *frames, size_t count)
+{
+	return controller_audio_ok
+		&& controller_audio.push(controller_audio.frontend_data, vmu / 2, vmu % 2, frames, count);
+}
+
 // Now comes the interesting stuff
 void retro_init()
 {
@@ -394,6 +445,7 @@ void retro_init()
 
 	init_disk_control_interface();
 	retro_audio_init();
+	probe_controller_interfaces();
 
 #if defined(__APPLE__)
     char *data_dir = NULL;
@@ -2459,58 +2511,6 @@ size_t retro_get_memory_size(unsigned type)
    if (type == RETRO_MEMORY_SYSTEM_RAM)
       return RAM_SIZE;
    return 0;
-}
-
-// The VMU LCDs, handed over instead of drawn on top of the game
-//
-// The only way this build has ever shown a VMU screen is the overlay in
-// vmu_xhair.cpp, which composites the 48 x 32 panel into the finished
-// framebuffer at a corner the player picks. That is right for a flat screen and
-// wrong for a frontend with somewhere better to put it -- a model of the card in
-// a VR room, a second window, a phone -- because such a frontend has to crop the
-// panel back out of the picture, and the pixels it covered are gone for good.
-// libretro has no second video output to publish it on instead.
-//
-// So publish it out of band. push_vmu_screen() already maintains vmu_lcd_data
-// for all eight VMUs from MapleConfigMap::SetImage whenever a card redraws, and
-// it does that whether or not any overlay is drawn -- as do the colour and
-// opacity options, which are read unconditionally. So a frontend can leave every
-// _vmu<N>_screen_display option disabled, get an untouched frame, and read the
-// screens from here.
-//
-// `vmu` is bus * 2 + port, indexing vmu_lcd_data: 0..7, where an even index is
-// the slot-1 card whose screen shows through the window in a real controller's
-// shell. `pixels` receives VMU_SCREEN_WIDTH * VMU_SCREEN_HEIGHT words as
-// 0xAABBGGRR, already coloured by that port's pixel_on_color / pixel_off_color /
-// screen_opacity. `count` is that buffer's length in words and must be at least
-// the panel's size. `changed`, when not null, receives the millisecond stamp of
-// the last update.
-//
-// A null `pixels` with a `count` of zero asks for the stamp alone. That is the
-// cheap poll: a VMU redraws far less often than the Dreamcast does, so a caller
-// that copies eight panels every frame is copying the same pixels back most of
-// the time.
-//
-// Returns false and writes nothing for an out-of-range index, or for a buffer
-// too small to hold a panel. Call it from the thread that calls retro_run,
-// between frames: vmu_lcd_data is written by the emulation thread under no lock,
-// and reading it from another thread can tear across an update.
-extern "C" RETRO_API bool flycast_get_vmu_screen(unsigned vmu, u32 *pixels, size_t count, u64 *changed)
-{
-	constexpr size_t panel = (size_t)VMU_SCREEN_WIDTH * VMU_SCREEN_HEIGHT;
-	if (vmu >= std::size(vmu_lcd_data))
-		return false;
-	if (pixels != nullptr)
-	{
-		if (count < panel)
-			return false;
-		memcpy(pixels, &vmu_lcd_data[vmu][0], panel * sizeof(u32));
-	}
-	else if (count != 0)
-		return false;
-	if (changed != nullptr)
-		*changed = vmuLastChanged[vmu];
-	return true;
 }
 
 size_t retro_serialize_size()

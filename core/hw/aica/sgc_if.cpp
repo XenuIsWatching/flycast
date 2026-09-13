@@ -45,6 +45,10 @@
 #define clip_verify(x)
 #endif
 
+#ifdef LIBRETRO
+bool libretro_vmu_beeps_routed();
+#endif
+
 namespace aica::sgc
 {
 //Sound generation, mixin, and channel regs emulation
@@ -235,7 +239,8 @@ private:
 		-4856, -8215, -8209, -8214, -8208, -7882, -3850,   162,
 		 4187,  8213,  8208,  8213,  8209,  8211,  4525 };
 };
-static VmuBeep beep;
+// One per VMU, indexed bus * 2 + port like the LCDs.
+static VmuBeep beeps[8];
 
 #pragma pack(push, 1)
 //All regs are 16b , aligned to 32b (upper bits 0?)
@@ -1468,7 +1473,8 @@ ChannelEx ChannelEx::Chans[64];
 void init()
 {
 	ChannelEx::initAll();
-	beep.init();
+	for (VmuBeep& b : beeps)
+		b.init();
 	dsp::init();
 }
 
@@ -1540,9 +1546,10 @@ void ReadCommonReg(u32 reg,bool byte)
 	}
 }
 
-void vmuBeep(int on, int period)
+void vmuBeep(int vmu, int on, int period)
 {
-	beep.update(on, period);
+	if (vmu >= 0 && vmu < (int)std::size(beeps))
+		beeps[vmu].update(on, period);
 }
 
 constexpr int CDDA_SIZE = 2352 / 2;
@@ -1595,11 +1602,25 @@ void AICA_Sample()
 #endif
 		return;
 
+#ifdef LIBRETRO
+	s16 beepSamples[std::size(beeps)] {};
+	const bool beepsRouted = config::VmuSound && libretro_vmu_beeps_routed();
+#endif
 	if (config::VmuSound)
 	{
-		SampleType b = beep.getSample();
-		mixl += b;
-		mixr += b;
+		for (int i = 0; i < (int)std::size(beeps); i++)
+		{
+			SampleType b = beeps[i].getSample();
+#ifdef LIBRETRO
+			if (beepsRouted)
+			{
+				beepSamples[i] = (s16)std::clamp(b, -32768, 32767);
+				continue;
+			}
+#endif
+			mixl += b;
+			mixr += b;
+		}
 	}
 
 	// Mono
@@ -1630,6 +1651,13 @@ void AICA_Sample()
 	mixl = std::clamp(mixl, -32768, 32767);
 	mixr = std::clamp(mixr, -32768, 32767);
 
+#ifdef LIBRETRO
+	if (beepsRouted)
+	{
+		WriteSampleAndBeeps(mixr, mixl, beepSamples);
+		return;
+	}
+#endif
 	WriteSample(mixr, mixl);
 }
 
@@ -1661,7 +1689,8 @@ void serialize(Serializer& ser)
 		ser << channel.lfo.state;
 		ser << channel.enabled;
 	}
-	beep.serialize(ser);
+	// The savestate layout holds one beep.
+	beeps[0].serialize(ser);
 	ser << cdda_sector;
 	ser << cdda_index;
 	ser << (u32)midiSendBuffer.size();
@@ -1717,7 +1746,9 @@ void deserialize(Deserializer& deser)
 		deser >> channel.enabled;
 		channel.quiet = false;
 	}
-	beep.deserialize(deser);
+	beeps[0].deserialize(deser);
+	for (int i = 1; i < (int)std::size(beeps); i++)
+		beeps[i].init();
 	deser >> cdda_sector;
 	deser >> cdda_index;
 	midiSendBuffer.clear();

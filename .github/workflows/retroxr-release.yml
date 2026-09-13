@@ -1,14 +1,9 @@
 # Build the retroXR flycast core for Windows and Android and publish it as a
 # release, so retroXR's CoreDownloadManager can fetch it.
 #
-# This fork exports flycast_get_vmu_screen, which hands a VMU's 48 x 32 LCD to
-# the frontend instead of compositing it into the finished frame. Stock flycast
-# has no second video output, so the only way it can show a VMU screen is to
-# draw it over the game at a corner the player picks -- and a frontend that
-# wants that screen somewhere of its own (a model of the card in a VR room, a
-# second window, a phone) has to crop it back out, losing the game's pixels
-# underneath it for good. The data was always maintained whether or not an
-# overlay was drawn; there was simply no way to ask for it.
+# This fork hands each VMU's LCD and beep to a frontend that answers two private
+# environment calls, the controller display and controller audio interfaces,
+# instead of drawing the screen over the game and mixing the beep into it.
 #
 #   Windows  flycast_libretro.dll.zip          containing flycast_libretro.dll
 #   Android  flycast_libretro_android.so.zip   containing flycast_libretro_android.so
@@ -72,14 +67,6 @@ jobs:
             printf '  %s\n' "${hits[@]}"
             exit 1
           fi
-          # The export this whole fork exists for. A build that silently lost it
-          # would install cleanly and fall back to the overlay, which is the very
-          # bug it was forked to fix -- so it is checked here rather than
-          # discovered in a headset.
-          if ! strings "${hits[0]}" | grep -q flycast_get_vmu_screen; then
-            echo "built dll does not export flycast_get_vmu_screen"
-            exit 1
-          fi
           mkdir -p stage
           cp "${hits[0]}" stage/flycast_libretro.dll
           (cd stage && zip -q -X ../flycast_libretro.dll.zip flycast_libretro.dll)
@@ -128,11 +115,6 @@ jobs:
             printf '  %s\n' "${hits[@]}"
             exit 1
           fi
-          NM="$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-nm"
-          if ! "$NM" -D --defined-only "${hits[0]}" | grep -q flycast_get_vmu_screen; then
-            echo "built so does not export flycast_get_vmu_screen"
-            exit 1
-          fi
           mkdir -p stage
           cp "${hits[0]}" stage/flycast_libretro_android.so
           (cd stage && zip -q -X ../flycast_libretro_android.so.zip flycast_libretro_android.so)
@@ -169,18 +151,16 @@ jobs:
           Windows x86_64 and Android arm64-v8a. The source for these binaries is
           this tag. flycast is GPLv2.
 
-          Over the stock buildbot build this exports one function:
+          Over the stock buildbot build:
 
-              bool flycast_get_vmu_screen(unsigned vmu, u32 *pixels,
-                                          size_t count, u64 *changed)
-
-          It hands a VMU's 48 x 32 LCD over directly, so a frontend can show that
-          screen wherever it likes without the core drawing it into the picture.
-          Stock flycast has no second video output and can only composite the
-          panel into the finished frame at a corner, which means cropping it back
-          out and losing the game's pixels underneath it for good. The data was
-          already maintained whether or not an overlay was drawn, so this adds no
-          emulation work at all -- only a way to ask for it.
+          * Each VMU's LCD is handed to a frontend that answers the controller
+            display interface, a private environment call, instead of being
+            drawn over the game.
+          * Each VMU's beep is handed over through the controller audio
+            interface, so a frontend can play it from the card. Without it the
+            beeps are mixed into the main stream as before.
+          * The libretro build links libandroid, without which the dynarec
+            crashed on its first memory access on Android.
           NOTES
           if ! gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release create "$TAG" \

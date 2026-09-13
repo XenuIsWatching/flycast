@@ -63,6 +63,10 @@ private:
 void InitAudio();
 void TermAudio();
 void WriteSample(s16 right, s16 left);
+#ifdef LIBRETRO
+// `beeps` holds one sample for each of the eight VMUs, indexed bus * 2 + port.
+void WriteSampleAndBeeps(s16 right, s16 left, const s16 *beeps);
+#endif
 
 void StartAudioRecording(bool eight_khz);
 u32 RecordAudio(void *buffer, u32 samples);

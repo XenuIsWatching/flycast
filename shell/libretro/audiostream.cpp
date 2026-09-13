@@ -21,6 +21,7 @@
 
 #include <libretro.h>
 
+#include <algorithm>
 #include <vector>
 #include <mutex>
 
@@ -59,6 +60,13 @@ static bool drop_samples = true;
 
 static int16_t *audio_out_buffer = nullptr;
 
+// VMU beeps: one mono stream per card, in step with audio_buffer.
+constexpr int VMU_BEEPS = 8;
+static std::vector<int16_t> beep_buffer[VMU_BEEPS];
+static std::vector<int16_t> beep_out_buffer[VMU_BEEPS];
+static bool beeps_written;
+extern bool libretro_push_vmu_beep(int vmu, const int16_t *frames, size_t count);
+
 void retro_audio_init(void)
 {
 	const std::lock_guard<std::mutex> lock(audio_buffer_mutex);
@@ -80,6 +88,12 @@ void retro_audio_init(void)
 	audio_batch_frames_max = std::numeric_limits<size_t>::max();
 
 	audio_out_buffer = (int16_t*)malloc(audio_buffer_size * sizeof(int16_t));
+	for (int v = 0; v < VMU_BEEPS; v++)
+	{
+		beep_buffer[v].assign(audio_buffer_size / 2, 0);
+		beep_out_buffer[v].assign(audio_buffer_size, 0);
+	}
+	beeps_written = false;
 
 	drop_samples = false;
 
@@ -93,6 +107,12 @@ void retro_audio_deinit(void)
 	const std::lock_guard<std::mutex> lock(audio_buffer_mutex);
 
 	audio_buffer.clear();
+	for (int v = 0; v < VMU_BEEPS; v++)
+	{
+		beep_buffer[v].clear();
+		beep_out_buffer[v].clear();
+	}
+	beeps_written = false;
 	audio_buffer_idx = 0;
 
 	if (audio_out_buffer != nullptr)
@@ -123,6 +143,16 @@ void retro_audio_upload(void)
 
 	for (size_t i = 0; i < audio_buffer_idx; i++)
 		audio_out_buffer[i] = audio_buffer[i];
+
+	const bool beeps = beeps_written;
+	beeps_written = false;
+	if (beeps)
+		for (int v = 0; v < VMU_BEEPS; v++)
+			for (size_t f = 0; f < (audio_buffer_idx >> 1); f++)
+			{
+				beep_out_buffer[v][f * 2] = beep_buffer[v][f];
+				beep_out_buffer[v][f * 2 + 1] = beep_buffer[v][f];
+			}
 
 	size_t num_frames = audio_buffer_idx >> 1;
 	audio_buffer_idx = 0;
@@ -192,6 +222,13 @@ void retro_audio_upload(void)
 			vsync_swap_interval_conter = 0;
 	}
 
+	// A beep the frontend does not take is mixed into the main stream.
+	if (beeps)
+		for (int v = 0; v < VMU_BEEPS; v++)
+			if (!libretro_push_vmu_beep(v, beep_out_buffer[v].data(), num_frames))
+				for (size_t i = 0; i < num_frames * 2; i++)
+					audio_out_buffer[i] = (int16_t)std::clamp(audio_out_buffer[i] + beep_out_buffer[v][i], -32768, 32767);
+
 	int16_t *audio_out_buffer_ptr = audio_out_buffer;
 	while (num_frames > 0)
 	{
@@ -227,6 +264,28 @@ void WriteSample(s16 r, s16 l)
 		return;
 	}
 
+	audio_buffer[audio_buffer_idx++] = l;
+	audio_buffer[audio_buffer_idx++] = r;
+}
+
+void WriteSampleAndBeeps(s16 r, s16 l, const s16 *beeps)
+{
+	const std::lock_guard<std::mutex> lock(audio_buffer_mutex);
+
+	if (drop_samples)
+		return;
+
+	if (audio_buffer.size() < audio_buffer_idx + 2)
+	{
+		audio_buffer_idx = 0;
+		drop_samples = true;
+		return;
+	}
+
+	const size_t frame = audio_buffer_idx >> 1;
+	for (int v = 0; v < VMU_BEEPS; v++)
+		beep_buffer[v][frame] = beeps[v];
+	beeps_written = true;
 	audio_buffer[audio_buffer_idx++] = l;
 	audio_buffer[audio_buffer_idx++] = r;
 }

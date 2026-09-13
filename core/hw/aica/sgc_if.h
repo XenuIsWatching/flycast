@@ -44,6 +44,6 @@ typedef s32 SampleType;
 void ReadCommonReg(u32 reg, bool byte);
 void serialize(Serializer& ctx);
 void deserialize(Deserializer& ctx);
-void vmuBeep(int on, int period);
+void vmuBeep(int vmu, int on, int period);
 
 } // namespace aica::sgc

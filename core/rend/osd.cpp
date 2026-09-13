@@ -18,6 +18,8 @@
 #include "stdclass.h"
 #ifdef LIBRETRO
 #include "vmu_xhair.h"
+
+void libretro_vmu_screen_changed(int bus_id, int bus_port);
 #endif
 
 u32 vmu_lcd_data[8][48 * 32];
@@ -43,6 +45,9 @@ void push_vmu_screen(int bus_id, int bus_port, u8* buffer)
 	vmu_lcd_status[vmu_id] = true;
 #endif
 	vmuLastChanged[vmu_id] = getTimeMs();
+#ifdef LIBRETRO
+	libretro_vmu_screen_changed(bus_id, bus_port);
+#endif
 }
 
 static const int lightgunCrosshairData[16 * 16] =
